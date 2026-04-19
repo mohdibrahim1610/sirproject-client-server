@@ -176,3 +176,4 @@ D:\D Drive\Ibrahim-Files\FullStack_Projects\SIR Project\SIRSearch\obj\Debug\net1
 D:\D Drive\Ibrahim-Files\FullStack_Projects\SIR Project\SIRSearch\bin\Debug\net10.0\win-x64\Swashbuckle.AspNetCore.Swagger.dll
 D:\D Drive\Ibrahim-Files\FullStack_Projects\SIR Project\SIRSearch\bin\Debug\net10.0\win-x64\Swashbuckle.AspNetCore.SwaggerGen.dll
 D:\D Drive\Ibrahim-Files\FullStack_Projects\SIR Project\SIRSearch\bin\Debug\net10.0\win-x64\Swashbuckle.AspNetCore.SwaggerUI.dll
+D:\D Drive\Ibrahim-Files\FullStack_Projects\SIR Project\SIRSearch\obj\Debug\net10.0\win-x64\SIRSearch.sourcelink.json
