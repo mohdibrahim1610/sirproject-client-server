@@ -1,0 +1,6 @@
+@SIRSearch_HostAddress = http://localhost:5237
+
+GET {{SIRSearch_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
