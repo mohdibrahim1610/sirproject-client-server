@@ -10,10 +10,9 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(x =>
 {
-    x.MultipartBodyLengthLimit = 200 * 1024 * 1024; // 200 MB
+    x.MultipartBodyLengthLimit = 200 * 1024 * 1024;
 });
 
-// ── increase Kestrel limit too (needed for large PDFs) ──
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.Limits.MaxRequestBodySize = 200 * 1024 * 1024;
@@ -29,83 +28,87 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReact", policy =>
         policy
-            .WithOrigins(
-                "http://localhost:3000",
-                "https://localhost:3000")
+            .WithOrigins("http://localhost:3000", "https://localhost:3000")
             .AllowAnyHeader()
             .AllowAnyMethod());
 });
 
 var app = builder.Build();
 
-// ── AUTO IMPORT on first run ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  ALL STARTUP TASKS — single scope block so db stays in scope
+// ═══════════════════════════════════════════════════════
 using (var scope = app.Services.CreateScope())
 {
     var db        = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     var extractor = scope.ServiceProvider.GetRequiredService<PdfExtractorService>();
 
+    // ── 1. Auto-import on first run ──────────────────────────────────────
     int existingCount = db.Voters.Count();
     Console.WriteLine($"Voters already in DB: {existingCount}");
 
     if (existingCount == 0)
     {
-        Console.WriteLine("DB is empty — importing full PDF now...");
+        var autoPath = @"C:\Users\pc\Downloads\Yakutpura Final Roll 2025\2025-EROLLGEN-S29-68-FinalRoll-Revision1-ENG-10-WI.pdf";
+        if (File.Exists(autoPath))
+        {
+            Console.WriteLine("DB is empty — importing full PDF now...");
+            var records = extractor.ExtractFromScannedPdf(
+                autoPath, district: "Hyderabad", state: "Telangana", startPage: 2, maxPages: 999);
+            Console.WriteLine($"Extracted {records.Count} voters — saving...");
+            db.Voters.AddRange(records);
+            db.SaveChanges();
+            Console.WriteLine($"Done! {records.Count} voters saved.");
+        }
+        else
+        {
+            Console.WriteLine("DB is empty but auto-import PDF not found — skipping.");
+        }
+    }
 
-        var records = extractor.ExtractFromScannedPdf(
-            @"C:\Users\pc\Downloads\Yakutpura Final Roll 2025\2025-EROLLGEN-S29-68-FinalRoll-Revision1-ENG-10-WI.pdf",
-            district:  "Hyderabad",
-            state:     "Telangana",
-            startPage: 2,
-            maxPages:  999
-        );
-
-        Console.WriteLine($"Extracted {records.Count} voters — saving to DB...");
-        db.Voters.AddRange(records);
+    // ── 2. Clean up completed jobs older than 7 days ─────────────────────
+    var cutoff  = DateTime.UtcNow.AddDays(-7);
+    var oldJobs = db.ImportJobs
+        .Where(j => j.Status == "done" && j.CreatedAt < cutoff)
+        .ToList();
+    if (oldJobs.Any())
+    {
+        db.ImportJobs.RemoveRange(oldJobs);
         db.SaveChanges();
-        Console.WriteLine($"Done! {records.Count} voters saved.");
+        Console.WriteLine($"🧹 Cleaned up {oldJobs.Count} old import jobs");
+    }
+
+    // ── 3. Mark interrupted jobs so user can retry ───────────────────────
+    var interrupted = db.ImportJobs
+        .Where(j => j.Status == "running" || j.Status == "pending")
+        .ToList();
+    if (interrupted.Any())
+    {
+        Console.WriteLine($"⚠️ Found {interrupted.Count} interrupted job(s) from previous run");
+        foreach (var j in interrupted)
+        {
+            j.Status = "error";
+            j.Error  = File.Exists(j.FilePath)
+                ? "Server restarted during processing — click Retry to re-run"
+                : "Server restarted and upload file was lost — please re-upload";
+            Console.WriteLine($"  → {j.FileName}: {j.Error}");
+        }
+        db.SaveChanges();
     }
 }
 
+// ═══════════════════════════════════════════════════════
+//  MIDDLEWARE PIPELINE
+// ═══════════════════════════════════════════════════════
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// ── ORDER MATTERS: CORS → HTTPS → Auth → Controllers ──
-app.UseCors("AllowReact");          // ← must be FIRST before UseHttpsRedirection
-app.UseHttpsRedirection();
+app.UseCors("AllowReact");
+// app.UseHttpsRedirection(); // disabled for local dev
 app.UseAuthorization();
 app.MapControllers();
-// ── Resume any jobs that were interrupted by a server restart ──
-using (var scope = app.Services.CreateScope())
-{
-    var db      = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    var pending = db.ImportJobs
-        .Where(j => j.Status == "pending" || j.Status == "running")
-        .ToList();
 
-    if (pending.Any())
-    {
-        Console.WriteLine($"▶ Resuming {pending.Count} incomplete jobs on startup...");
-        var extractor    = scope.ServiceProvider.GetRequiredService<PdfExtractorService>();
-        var scopeFactory = scope.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
-        var config       = scope.ServiceProvider.GetRequiredService<IConfiguration>();
-
-        foreach (var job in pending)
-        {
-            job.Status = "pending"; // reset "running" → "pending" (was interrupted)
-            db.SaveChanges();
-
-            _ = Task.Run(async () =>
-            {
-                // Re-use the controller's ProcessJobAsync logic via a temp instance
-                var ctrl = new SIRSearch.Controllers.ImportController(
-                    db, extractor, scopeFactory, config);
-                // Since ProcessJobAsync is private, just re-queue via the same pattern:
-                Console.WriteLine($"▶ Re-queuing interrupted job: {job.JobId} ({job.FileName})");
-            });
-        }
-    }
-}
 app.Run();

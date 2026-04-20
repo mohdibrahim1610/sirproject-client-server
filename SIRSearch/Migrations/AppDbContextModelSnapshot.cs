@@ -48,6 +48,9 @@ namespace SIRSearch.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int>("PagesProcessed")
+                        .HasColumnType("int");
+
                     b.Property<int>("StartPage")
                         .HasColumnType("int");
 
@@ -60,6 +63,9 @@ namespace SIRSearch.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("TotalInserted")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalPages")
                         .HasColumnType("int");
 
                     b.Property<int>("TotalParsed")

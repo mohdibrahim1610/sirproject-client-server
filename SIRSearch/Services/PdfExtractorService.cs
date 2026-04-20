@@ -280,56 +280,95 @@ namespace SIRSearch.Services
         //  SCANNED PDF  (OCR path)
         // ─────────────────────────────────────────
 
-        public List<VoterRecord> ExtractFromScannedPdf(string pdfPath,
-                                                       string district  = "",
-                                                       string state     = "",
-                                                       int    startPage = 0,
-                                                       int    maxPages  = 999)
+        // ── Semaphore: only 1 OCR job at a time — Tesseract is not thread-safe ──
+        private static readonly SemaphoreSlim _ocrSemaphore = new(1, 1);
+
+        public List<VoterRecord> ExtractFromScannedPdf(
+            string           pdfPath,
+            string           district         = "",
+            string           state            = "",
+            int              startPage        = 0,
+            int              maxPages         = 999,
+            Action<int,int>? onPageProgress   = null)   // callback(pagesDone, pagesTotal)
+        {
+            // ── Wait for exclusive OCR access — queues other uploads until this finishes ──
+            Console.WriteLine($"⏳ Waiting for OCR slot: {Path.GetFileName(pdfPath)}");
+            _ocrSemaphore.Wait();
+            Console.WriteLine($"✅ OCR slot acquired: {Path.GetFileName(pdfPath)}");
+
+            try
+            {
+                return RunExtraction(pdfPath, district, state, startPage, maxPages, onPageProgress);
+            }
+            finally
+            {
+                _ocrSemaphore.Release();
+                Console.WriteLine($"🔓 OCR slot released: {Path.GetFileName(pdfPath)}");
+            }
+        }
+
+        private List<VoterRecord> RunExtraction(
+            string           pdfPath,
+            string           district,
+            string           state,
+            int              startPage,
+            int              maxPages,
+            Action<int,int>? onPageProgress)
         {
             var allRecords = new List<VoterRecord>();
             var imagePaths = new List<string>();
 
-            // ── Step 1: get total page count, then render ──
+            // ── Step 1: get total page count ──
             int totalPages;
             using (var lib = DocLib.Instance)
             using (var docReader = lib.GetDocReader(pdfPath, new PageDimensions(2480, 3508)))
                 totalPages = docReader.GetPageCount();
 
-            int headerScanPages = Math.Min(3, startPage);   // pages before voter content
+            int headerScanPages = Math.Min(3, startPage);
             int endPage         = Math.Min(startPage + maxPages, totalPages);
+            int voterPageCount  = endPage - startPage;
 
-            Console.WriteLine($"Total pages: {totalPages}, header pages: 0-{headerScanPages - 1}, voter pages: {startPage}-{endPage - 1}");
+            Console.WriteLine($"📄 Pages: total={totalPages}, header=0-{headerScanPages-1}, voters={startPage}-{endPage-1} ({voterPageCount} pages)");
 
-            // Render header pages (0 … startPage-1, max 3)
+            // ── Step 2: render header pages ──
             for (int i = 0; i < headerScanPages; i++)
-                imagePaths.Add(RenderPageToTemp(pdfPath, i));
+            {
+                try   { imagePaths.Add(RenderPageToTemp(pdfPath, i)); }
+                catch (Exception ex) { Console.WriteLine($"⚠️ Header render failed page {i}: {ex.Message}"); }
+            }
 
-            // Render voter pages
+            // ── Step 3: render voter pages ──
             for (int i = startPage; i < endPage; i++)
-                imagePaths.Add(RenderPageToTemp(pdfPath, i));
+            {
+                try   { imagePaths.Add(RenderPageToTemp(pdfPath, i)); }
+                catch (Exception ex) { Console.WriteLine($"⚠️ Voter render failed page {i}: {ex.Message}"); }
+            }
 
-            // ── Step 2: OCR header pages for location info ──
+            // ── Step 4: OCR header pages for location metadata ──
             string mandal = "", postOffice = "", policeStation = "",
                    revenueDivision = "", pinCode = "", pollingStation = "", section = "";
 
             for (int i = 0; i < headerScanPages; i++)
             {
-                if (!File.Exists(imagePaths[i])) continue;
+                if (i >= imagePaths.Count || !File.Exists(imagePaths[i])) continue;
                 try
                 {
                     var ocrText = OcrImage(imagePaths[i]);
                     var lines   = ocrText.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                                         .Select(l => l.Trim()).Where(l => l.Length > 2).ToList();
+                                         .Select(l => l.Trim())
+                                         .Where(l => l.Length > 2)
+                                         .ToList();
                     var h = ExtractPageHeader(lines);
 
-                    if (string.IsNullOrEmpty(mandal)         && !string.IsNullOrEmpty(h.mandal))         mandal         = h.mandal;
-                    if (string.IsNullOrEmpty(postOffice)      && !string.IsNullOrEmpty(h.postOffice))      postOffice      = h.postOffice;
-                    if (string.IsNullOrEmpty(policeStation)   && !string.IsNullOrEmpty(h.policeStation))   policeStation   = h.policeStation;
-                    if (string.IsNullOrEmpty(revenueDivision) && !string.IsNullOrEmpty(h.revenueDivision)) revenueDivision = h.revenueDivision;
-                    if (string.IsNullOrEmpty(pinCode)         && !string.IsNullOrEmpty(h.pinCode))         pinCode         = h.pinCode;
-                    if (string.IsNullOrEmpty(pollingStation)  && !string.IsNullOrEmpty(h.pollingStation))  pollingStation  = h.pollingStation;
-                    if (string.IsNullOrEmpty(section)         && !string.IsNullOrEmpty(h.section))         section         = h.section;
+                    if (string.IsNullOrEmpty(mandal)          && !string.IsNullOrEmpty(h.mandal))          mandal          = h.mandal;
+                    if (string.IsNullOrEmpty(postOffice)       && !string.IsNullOrEmpty(h.postOffice))       postOffice       = h.postOffice;
+                    if (string.IsNullOrEmpty(policeStation)    && !string.IsNullOrEmpty(h.policeStation))    policeStation    = h.policeStation;
+                    if (string.IsNullOrEmpty(revenueDivision)  && !string.IsNullOrEmpty(h.revenueDivision))  revenueDivision  = h.revenueDivision;
+                    if (string.IsNullOrEmpty(pinCode)          && !string.IsNullOrEmpty(h.pinCode))          pinCode          = h.pinCode;
+                    if (string.IsNullOrEmpty(pollingStation)   && !string.IsNullOrEmpty(h.pollingStation))   pollingStation   = h.pollingStation;
+                    if (string.IsNullOrEmpty(section)          && !string.IsNullOrEmpty(h.section))          section          = h.section;
                 }
+                catch (Exception ex) { Console.WriteLine($"⚠️ Header OCR error page {i}: {ex.Message}"); }
                 finally
                 {
                     if (File.Exists(imagePaths[i])) File.Delete(imagePaths[i]);
@@ -338,24 +377,45 @@ namespace SIRSearch.Services
 
             Console.WriteLine($"  📍 Header → Mandal:{mandal} | PO:{postOffice} | Booth:{pollingStation} | PIN:{pinCode}");
 
-            // ── Step 3: OCR voter pages ──
+            // ── Step 5: OCR voter pages ──
             var voterImages = imagePaths.Skip(headerScanPages).ToList();
+
             for (int i = 0; i < voterImages.Count; i++)
             {
+                // ── Report progress to caller (updates DB job record) ──
+                onPageProgress?.Invoke(i + 1, voterImages.Count);
+
                 var imgPath = voterImages[i];
                 Console.WriteLine($"  OCR page {i + 1}/{voterImages.Count}...");
+
                 try
                 {
-                    var ocrText    = OcrImage(imgPath);
+                    var ocrText = OcrImage(imgPath);
 
+                    // ── OCR noise filter: skip lines that are clearly garbage ──
+                    // (Tesseract sometimes returns junk on low-quality scans)
+                    var cleanLines = ocrText
+                        .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(l => l.Trim())
+                        .Where(l =>
+                            l.Length >= 3 &&                                             // too short = noise
+                            !l.All(char.IsDigit) &&                                     // pure numbers = page numbers/serials, not names
+                            l.Count(c => !char.IsLetterOrDigit(c) && c != ' ') <= l.Length * 0.4  // too many symbols = OCR garbage
+                        )
+                        .ToList();
+
+                    // Log sample for first 2 pages to help debug
                     if (i < 2)
                     {
-                        Console.WriteLine($"=== OCR SAMPLE page {startPage + i + 1} ===");
-                        Console.WriteLine(ocrText[..Math.Min(800, ocrText.Length)]);
+                        Console.WriteLine($"=== OCR SAMPLE page {startPage + i + 1} ({cleanLines.Count} clean lines) ===");
+                        Console.WriteLine(string.Join("\n", cleanLines.Take(20)));
                         Console.WriteLine("================================");
                     }
 
-                    var pageRecords = ParseSirFormat(ocrText,
+                    // Re-join cleaned lines for parser
+                    var cleanText   = string.Join("\n", cleanLines);
+                    var pageRecords = ParseSirFormat(
+                        cleanText,
                         Path.GetFileName(pdfPath),
                         district, state,
                         pageNumber:      startPage + i + 1,
@@ -370,13 +430,17 @@ namespace SIRSearch.Services
                     Console.WriteLine($"    → {pageRecords.Count} voters on page {startPage + i + 1}");
                     allRecords.AddRange(pageRecords);
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ❌ OCR error page {startPage + i + 1}: {ex.Message}");
+                }
                 finally
                 {
                     if (File.Exists(imgPath)) File.Delete(imgPath);
                 }
             }
 
-            Console.WriteLine($"\nTOTAL voters extracted: {allRecords.Count}");
+            Console.WriteLine($"\n✅ TOTAL voters extracted: {allRecords.Count}");
             return allRecords;
         }
 
