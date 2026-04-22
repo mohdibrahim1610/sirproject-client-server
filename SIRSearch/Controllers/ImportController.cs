@@ -11,21 +11,21 @@ namespace SIRSearch.Controllers
     [Route("api/[controller]")]
     public class ImportController : ControllerBase
     {
-        private readonly AppDbContext _db;
-        private readonly PdfExtractorService _extractor;
+        private readonly AppDbContext         _db;
+        private readonly PdfExtractorService  _extractor;
         private readonly IServiceScopeFactory _scopeFactory;
-        private readonly string _uploadPath;
+        private readonly string               _uploadPath;
 
         public ImportController(
-            AppDbContext db,
-            PdfExtractorService extractor,
+            AppDbContext         db,
+            PdfExtractorService  extractor,
             IServiceScopeFactory scopeFactory,
-            IConfiguration config)
+            IConfiguration       config)
         {
-            _db = db;
-            _extractor = extractor;
+            _db           = db;
+            _extractor    = extractor;
             _scopeFactory = scopeFactory;
-            _uploadPath = config["UploadPath"]
+            _uploadPath   = config["UploadPath"]
                             ?? Path.Combine(AppContext.BaseDirectory, "Uploads");
             Directory.CreateDirectory(_uploadPath);
         }
@@ -48,9 +48,9 @@ namespace SIRSearch.Controllers
             if (!file.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                 return BadRequest("Only PDF files are supported.");
 
-            var safeExt = Path.GetExtension(file.FileName);
+            var safeExt       = Path.GetExtension(file.FileName);
             var savedFileName = $"sir_{Guid.NewGuid():N}{safeExt}";
-            var savedPath = Path.Combine(_uploadPath, savedFileName);
+            var savedPath     = Path.Combine(_uploadPath, savedFileName);
 
             using (var stream = new FileStream(savedPath, FileMode.Create))
                 await file.CopyToAsync(stream);
@@ -63,11 +63,11 @@ namespace SIRSearch.Controllers
 
             var job = new ImportJob
             {
-                FileName = file.FileName,
-                FilePath = savedPath,
-                Status = "pending",
-                District = district ?? "Hyderabad",
-                State = state ?? "Telangana",
+                FileName  = file.FileName,
+                FilePath  = savedPath,
+                Status    = "pending",
+                District  = district  ?? "Hyderabad",
+                State     = state     ?? "Telangana",
                 StartPage = startPage,
             };
             _db.ImportJobs.Add(job);
@@ -80,28 +80,29 @@ namespace SIRSearch.Controllers
             return Accepted(new { jobId = job.JobId, message = "Import queued" });
         }
 
-
+        // ─────────────────────────────────────────
+        //  GET /api/import/stats
+        // ─────────────────────────────────────────
         [HttpGet("stats")]
         public async Task<IActionResult> Stats()
         {
-            var total = await _db.Voters.CountAsync();
+            var total   = await _db.Voters.CountAsync();
             var byState = await _db.Voters
                 .GroupBy(v => v.State)
                 .Select(g => new { state = g.Key, count = g.Count() })
                 .ToListAsync();
 
-            // ── ADD: top constituency from source files ──
-            var topConstituency = await _db.Voters
-                .Where(v => !string.IsNullOrEmpty(v.PollingStation))
+            // Pull the most common district name to show as constituency
+            // Falls back to "Yakutpura" if no data
+            var constituency = await _db.Voters
+                .Where(v => v.District != null && v.District != "")
                 .GroupBy(v => v.District)
                 .OrderByDescending(g => g.Count())
                 .Select(g => g.Key)
                 .FirstOrDefaultAsync() ?? "Yakutpura";
 
-            return Ok(new { totalVoters = total, byState, constituency = topConstituency });
+            return Ok(new { totalVoters = total, byState, constituency });
         }
-
-
 
         // ─────────────────────────────────────────
         //  GET /api/import/job/{jobId}
@@ -123,8 +124,8 @@ namespace SIRSearch.Controllers
                 job.Error,
                 job.CreatedAt,
                 job.CompletedAt,
-                job.PagesProcessed,   // ← for frontend progress bar
-                job.TotalPages,       // ← for frontend progress bar
+                job.PagesProcessed,
+                job.TotalPages,
             });
         }
 
@@ -171,14 +172,14 @@ namespace SIRSearch.Controllers
             if (!System.IO.File.Exists(job.FilePath))
                 return BadRequest("Original file no longer exists — please re-upload.");
 
-            job.Status = "pending";
-            job.Error = null;
-            job.TotalParsed = 0;
-            job.TotalInserted = 0;
-            job.TotalSkipped = 0;
+            job.Status         = "pending";
+            job.Error          = null;
+            job.TotalParsed    = 0;
+            job.TotalInserted  = 0;
+            job.TotalSkipped   = 0;
             job.PagesProcessed = 0;
-            job.TotalPages = 0;
-            job.CompletedAt = null;
+            job.TotalPages     = 0;
+            job.CompletedAt    = null;
             await _db.SaveChangesAsync();
 
             _ = Task.Run(() => ProcessJobAsync(job.JobId));
@@ -187,26 +188,11 @@ namespace SIRSearch.Controllers
         }
 
         // ─────────────────────────────────────────
-        //  GET /api/import/stats
-        // ─────────────────────────────────────────
-        [HttpGet("stats")]
-        public async Task<IActionResult> Stats()
-        {
-            var total = await _db.Voters.CountAsync();
-            var byState = await _db.Voters
-                .GroupBy(v => v.State)
-                .Select(g => new { state = g.Key, count = g.Count() })
-                .ToListAsync();
-
-            return Ok(new { totalVoters = total, byState });
-        }
-
-        // ─────────────────────────────────────────
         //  POST /api/import/folder
         // ─────────────────────────────────────────
         [HttpPost("folder")]
         public async Task<IActionResult> ImportFolder(
-            [FromQuery] string folderPath,
+            [FromQuery] string  folderPath,
             [FromQuery] string? district,
             [FromQuery] string? state)
         {
@@ -221,19 +207,19 @@ namespace SIRSearch.Controllers
 
             foreach (var filePath in pdfFiles.OrderBy(f => f))
             {
-                var fileName = Path.GetFileName(filePath);
+                var fileName   = Path.GetFileName(filePath);
                 var constMatch = System.Text.RegularExpressions.Regex.Match(
                     fileName, @"S29-(\d+).*ENG-(\d+)");
                 string constCode = constMatch.Success ? constMatch.Groups[1].Value : "?";
-                string partNo = constMatch.Success ? constMatch.Groups[2].Value : "?";
+                string partNo    = constMatch.Success ? constMatch.Groups[2].Value : "?";
 
                 var job = new ImportJob
                 {
-                    FileName = fileName,
-                    FilePath = filePath,
-                    Status = "pending",
-                    District = district ?? "Hyderabad",
-                    State = state ?? "Telangana",
+                    FileName  = fileName,
+                    FilePath  = filePath,
+                    Status    = "pending",
+                    District  = district ?? "Hyderabad",
+                    State     = state    ?? "Telangana",
                     StartPage = 2,
                 };
                 _db.ImportJobs.Add(job);
@@ -249,18 +235,17 @@ namespace SIRSearch.Controllers
             {
                 totalQueued = pdfFiles.Length,
                 jobIds,
-                message = "All files queued"
+                message     = "All files queued"
             });
         }
 
         // ─────────────────────────────────────────
         //  BACKGROUND WORKER
-        //  Own DB scope — safe for background threads
         // ─────────────────────────────────────────
         private async Task ProcessJobAsync(string jobId)
         {
             using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var db          = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
             var job = await db.ImportJobs.FindAsync(jobId);
             if (job == null)
@@ -278,27 +263,25 @@ namespace SIRSearch.Controllers
                 if (!System.IO.File.Exists(job.FilePath))
                     throw new FileNotFoundException($"PDF not found: {job.FilePath}");
 
-                // ── OCR with page progress callback ──
                 var records = _extractor.ExtractFromScannedPdf(
                     job.FilePath,
-                    district: job.District,
-                    state: job.State,
+                    district:  job.District,
+                    state:     job.State,
                     startPage: job.StartPage,
-                    maxPages: 999,
+                    maxPages:  999,
                     onPageProgress: (done, total) =>
                     {
                         job.PagesProcessed = done;
-                        job.TotalPages = total;
+                        job.TotalPages     = total;
                         db.SaveChangesAsync().GetAwaiter().GetResult();
                     });
 
                 Console.WriteLine($"📊 Job {jobId}: {records.Count} voters extracted");
 
-                // Stamp original filename on every record
                 foreach (var r in records)
                     r.SourceFile = job.FileName;
 
-                // ── Bulk dedup: 2 DB calls instead of N×AnyAsync ──
+                // Bulk dedup — 2 DB calls instead of N×AnyAsync
                 var existingKeys = await db.Voters
                     .Where(v => v.SourceFile == job.FileName)
                     .Select(v => v.NameNormalized + "|" + v.FatherName)
@@ -311,26 +294,22 @@ namespace SIRSearch.Controllers
                 await db.Voters.AddRangeAsync(toInsert);
                 await db.SaveChangesAsync();
 
-                int inserted = toInsert.Count;
+                job.Status        = "done";
+                job.TotalParsed   = records.Count;
+                job.TotalInserted = toInsert.Count;
+                job.TotalSkipped  = records.Count - toInsert.Count;
+                job.CompletedAt   = DateTime.UtcNow;
 
-                job.Status = "done";
-                job.TotalParsed = records.Count;
-                job.TotalInserted = inserted;
-                job.TotalSkipped = records.Count - inserted;
-                job.CompletedAt = DateTime.UtcNow;
+                Console.WriteLine($"✅ Job {jobId} done: {toInsert.Count} inserted, {job.TotalSkipped} skipped");
 
-                Console.WriteLine($"✅ Job {jobId} done: {inserted} inserted, {job.TotalSkipped} skipped");
-
-                // Delete uploaded file only after successful DB write
                 if (System.IO.File.Exists(job.FilePath))
                     System.IO.File.Delete(job.FilePath);
             }
             catch (Exception ex)
             {
                 job.Status = "error";
-                job.Error = ex.Message;
+                job.Error  = ex.Message;
                 Console.WriteLine($"❌ Job {jobId} error: {ex.Message}");
-                // File kept on disk — allows retry
             }
 
             await db.SaveChangesAsync();
